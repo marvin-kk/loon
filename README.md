@@ -1,50 +1,62 @@
-const cookieKey = 'my_tb_coin_cookie';
-const $ = new Loon(); // 假设你使用的是基础工具类
+/**
+ * [Script]
+ * http-request ^https:\/\/guide-acs\.m\.taobao\.com\/gw\/mtop\.taobao\.ms\.coins\.entry script-path=taojinbi.js, tag=抓取金币Cookie
+ * cron "0 9 * * *" script-path=taojinbi.js, tag=自动领金币
+ */
 
-if (typeof $request !== 'undefined') {
-    // --- 获取 Cookie 逻辑 ---
+const KEY_COOKIE = "tb_coin_cookie";
+const KEY_HEADERS = "tb_coin_headers";
+
+// 判断是 Loon 拦截请求还是定时任务触发
+const isRequest = typeof $request !== 'undefined';
+
+if (isRequest) {
+    // --- 抓取模块 ---
+    // 捕获请求头，里面包含了淘宝生成的签名和 Session
+    const headers = JSON.stringify($request.headers);
     const cookie = $request.headers['Cookie'] || $request.headers['cookie'];
+
     if (cookie) {
-        $.setdata(cookie, cookieKey);
-        $.notification("淘宝金币", "Cookie 获取成功", "现在可以关闭重写脚本了");
+        $persistentStore.write(cookie, KEY_COOKIE);
+        $persistentStore.write(headers, KEY_HEADERS);
+        $notification.post("淘宝金币", "凭据获取成功", "现在可以执行定时任务了");
     }
-    $.done({});
+    $done({});
 } else {
-    // --- 自动领取逻辑 ---
-    const savedCookie = $.getdata(cookieKey);
-    if (!savedCookie) {
-        $.notification("淘宝金币", "领取失败", "未检测到有效 Cookie，请先登录并进入页面");
-        $.done();
+    // --- 执行模块 ---
+    const savedCookie = $persistentStore.read(KEY_COOKIE);
+    const savedHeaders = $persistentStore.read(KEY_HEADERS);
+
+    if (!savedCookie || !savedHeaders) {
+        $notification.post("淘宝金币", "运行失败", "请先手动进入一次金币页面获取凭据");
+        $done();
     }
 
     const request = {
         url: 'https://guide-acs.m.taobao.com/gw/mtop.taobao.ms.coins.entry/1.0/',
-        headers: {
-            'Cookie': savedCookie,
-            'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148'
-        }
+        headers: JSON.parse(savedHeaders), // 复用抓到的全部请求头
+        body: '' 
     };
 
-    $.post(request, (error, response, data) => {
+    // 强行更新请求头中的 Cookie，确保是最新的
+    request.headers['Cookie'] = savedCookie;
+
+    $httpClient.post(request, (error, response, data) => {
         if (error) {
-            $.notification("淘宝金币", "请求错误", error);
+            $notification.post("淘宝金币", "网络错误", error);
         } else {
-            const res = JSON.parse(data);
-            if (res.ret[0].includes("SUCCESS")) {
-                $.notification("淘宝金币", "领取成功", "今日金币已到账");
-            } else {
-                $.notification("淘宝金币", "领取失败", res.ret[0]);
+            try {
+                const obj = JSON.parse(data);
+                // 淘宝接口通常返回 ["SUCCESS::调用成功"]
+                if (obj.ret[0].includes("SUCCESS")) {
+                    $notification.post("淘宝金币", "领取成功", "今日金币已到账");
+                } else {
+                    $notification.post("淘宝金币", "领取失败", obj.ret[0]);
+                }
+            } catch (e) {
+                $notification.post("淘宝金币", "解析失败", "返回内容异常");
             }
         }
-        $.done();
+        $done();
     });
-}
-
-// 简易 Loon 环境适配器
-function Loon() {
-    this.getdata = (key) => $persistentStore.read(key);
-    this.setdata = (val, key) => $persistentStore.write(val, key);
-    this.notification = (title, subtitle, content) => $notification.post(title, subtitle, content);
-    this.post = (opts, cb) => $httpClient.post(opts, cb);
-    this.done = (obj = {}) => $done(obj);
 }
